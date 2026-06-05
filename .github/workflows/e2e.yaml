@@ -6,7 +6,6 @@ on:
   push:
     branches:
       - main
-      - kustomize/v1.24.0-est
 
 permissions:
   contents: read
