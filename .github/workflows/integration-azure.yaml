@@ -4,9 +4,12 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "0 12 * * *"
+  pull_request:
+    branches:
+      - kustomize/v1.24.0-est-vmg
   push:
     branches:
-      - kustomize/v1.24.0-est
+      - kustomize/v1.24.0-est-vmg
 
 permissions:
   contents: read
