@@ -30,11 +30,13 @@ import (
 	"github.com/otiai10/copy"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/kustomize/api/provider"
 	"sigs.k8s.io/kustomize/api/resmap"
 	kustypes "sigs.k8s.io/kustomize/api/types"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
 	"sigs.k8s.io/yaml"
 
+	apikustomize "github.com/fluxcd/pkg/apis/kustomize"
 	"github.com/fluxcd/pkg/kustomize"
 )
 
@@ -1106,4 +1108,122 @@ const customOpenAPISchema = `{
   "paths": {},
   "definitions": {}
 }
+`
+
+func TestApplyPatches_StrategicMerge(t *testing.T) {
+	g := NewWithT(t)
+
+	m := resMapFromYAML(t, applyPatchesConfigMap)
+	patches := []apikustomize.Patch{
+		{
+			Patch: `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test
+data:
+  foo: baz
+`,
+			Target: &apikustomize.Selector{Kind: "ConfigMap"},
+		},
+	}
+
+	err := kustomize.ApplyPatches(m, patches)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(m.Resources()).To(HaveLen(1))
+	value, err := m.Resources()[0].GetFieldValue("data.foo")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(value).To(Equal("baz"))
+}
+
+func TestApplyPatches_JSON6902(t *testing.T) {
+	g := NewWithT(t)
+
+	m := resMapFromYAML(t, applyPatchesConfigMap)
+	patches := []apikustomize.Patch{
+		{
+			Patch:  `[{"op":"replace","path":"/data/foo","value":"baz"}]`,
+			Target: &apikustomize.Selector{Kind: "ConfigMap"},
+		},
+	}
+
+	err := kustomize.ApplyPatches(m, patches)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(m.Resources()).To(HaveLen(1))
+	value, err := m.Resources()[0].GetFieldValue("data.foo")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(value).To(Equal("baz"))
+}
+
+func TestApplyPatches_NoMatch(t *testing.T) {
+	g := NewWithT(t)
+
+	m := resMapFromYAML(t, applyPatchesConfigMap)
+	patches := []apikustomize.Patch{
+		{
+			Patch: `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: does-not-exist
+data:
+  foo: baz
+`,
+		},
+	}
+
+	err := kustomize.ApplyPatches(m, patches)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("failed to apply patch 0"))
+}
+
+func TestApplyPatches_panic(t *testing.T) {
+	g := NewWithT(t)
+
+	// A resource carrying inconsistent previous-id build annotations causes
+	// a panic while recording the previous resource ID
+	const malformed = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test
+  annotations:
+    internal.config.kubernetes.io/previousNames: a,b
+    internal.config.kubernetes.io/previousNamespaces: x
+    internal.config.kubernetes.io/previousKinds: ConfigMap
+data:
+  foo: bar
+`
+
+	patches := []apikustomize.Patch{
+		{
+			Patch:  `[{"op":"replace","path":"/data/foo","value":"baz"}]`,
+			Target: &apikustomize.Selector{Kind: "ConfigMap"},
+		},
+	}
+
+	err := kustomize.ApplyPatches(resMapFromYAML(t, malformed), patches)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("recovered from kustomize apply patches panic"))
+
+	// Run again to ensure the lock is released.
+	err = kustomize.ApplyPatches(resMapFromYAML(t, malformed), patches)
+	g.Expect(err).To(HaveOccurred())
+}
+
+func resMapFromYAML(t *testing.T, yaml string) resmap.ResMap {
+	t.Helper()
+	g := NewWithT(t)
+	depProvider := provider.NewDefaultDepProvider()
+	factory := resmap.NewFactory(depProvider.GetResourceFactory())
+	m, err := factory.NewResMapFromBytes([]byte(yaml))
+	g.Expect(err).NotTo(HaveOccurred())
+	return m
+}
+
+const applyPatchesConfigMap = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test
+data:
+  foo: bar
 `
